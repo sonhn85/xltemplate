@@ -1,5 +1,5 @@
-#ifndef DUCKDB_EXCEL_ADDIN_H
-#define DUCKDB_EXCEL_ADDIN_H
+#ifndef XLTEMPLATE_H
+#define XLTEMPLATE_H
 
 #include <windows.h>
 #include "XLCALL.H"
@@ -30,10 +30,7 @@
 /* Type and name pair of parameters (comma-separated) */
 #define WORKSHEET_PARAM_AND_TYPE_LIST WORKSHEET_PARAMS(WORKSHEET_PARAM_AND_TYPE_SEPARATED, WORKSHEET_PARAM_AND_TYPE)
 /* Comma-separated parameter help text. */
-#define HELP_TEXT_NO_INIT L"stmts," WORKSHEET_PARAMS(WORKSHEET_PARAM_HELP_SEPARATED, WORKSHEET_PARAM_HELP)
-#define HELP_TEXT_WITH_INIT L"init_stmts,stmts," WORKSHEET_PARAMS(WORKSHEET_PARAM_HELP_SEPARATED, WORKSHEET_PARAM_HELP)
-#define HELP_TEXT_ATTACH_NO_INIT L"db_file,stmts," WORKSHEET_PARAMS(WORKSHEET_PARAM_HELP_SEPARATED, WORKSHEET_PARAM_HELP)
-#define HELP_TEXT_ATTACH_WITH_INIT L"db_file,init_stmts,stmts," WORKSHEET_PARAMS(WORKSHEET_PARAM_HELP_SEPARATED, WORKSHEET_PARAM_HELP)
+#define HELP_TEXT L"template," WORKSHEET_PARAMS(WORKSHEET_PARAM_HELP_SEPARATED, WORKSHEET_PARAM_HELP)
 /* Complete Excel registration type string. */
 #define TYPE_STRING(PREFIX, SUFFIX) PREFIX WORKSHEET_PARAM_STRING SUFFIX
 
@@ -48,15 +45,8 @@
  *    category)
  */
 #define XLL_FUNCTIONS(X) \
-X(exec_sync_no_init,    L"DUCKDB.EXEC",        TYPE_STRING(L"QD%", L"$"),    HELP_TEXT_NO_INIT,   FUNCTION_CATEGORY) \
-X(exec_async_no_init,   L"DUCKDB.EXEC.ASYNC",  TYPE_STRING(L">XD%", L"$"),   HELP_TEXT_NO_INIT,   FUNCTION_CATEGORY) \
-X(addin_info,           L"DUCKDB.INFO",        L"Q",                         L"",                 FUNCTION_CATEGORY) \
-X(exec_sync_with_init,  L"DUCKDB.EXECX",       TYPE_STRING(L"QD%D%", L"$"),  HELP_TEXT_WITH_INIT, FUNCTION_CATEGORY) \
-X(exec_async_with_init, L"DUCKDB.EXECX.ASYNC", TYPE_STRING(L">XD%D%", L"$"), HELP_TEXT_WITH_INIT, FUNCTION_CATEGORY) \
-X(attach_and_exec_sync_no_init,    L"DUCKDB.EXECA",        TYPE_STRING(L"QD%D%", L"$"),    HELP_TEXT_ATTACH_NO_INIT, FUNCTION_CATEGORY) \
-X(attach_and_exec_async_no_init,   L"DUCKDB.EXECA.ASYNC",  TYPE_STRING(L">XD%D%", L"$"),   HELP_TEXT_ATTACH_NO_INIT, FUNCTION_CATEGORY) \
-X(attach_and_exec_sync_with_init,  L"DUCKDB.EXECAX",       TYPE_STRING(L"QD%D%D%", L"$"),  HELP_TEXT_ATTACH_WITH_INIT, FUNCTION_CATEGORY) \
-X(attach_and_exec_async_with_init, L"DUCKDB.EXECAX.ASYNC", TYPE_STRING(L">XD%D%D%", L"$"), HELP_TEXT_ATTACH_WITH_INIT, FUNCTION_CATEGORY)
+X(render,     L"RENDER",      TYPE_STRING(L"QD%", L"$"), HELP_TEXT, FUNCTION_CATEGORY) \
+X(addin_info, L"RENDER.INFO", L"Q",                      L"",       FUNCTION_CATEGORY)
 
 #ifdef __cplusplus
 extern "C" {
@@ -80,78 +70,22 @@ DLLEXPORT void WINAPI xlAutoFree12(LPXLOPER12 pxFree);
 DLLEXPORT LPXLOPER12 WINAPI xlAddInManagerInfo12(LPXLOPER12 pxAction);
 
 /*
- * Execute SQL asynchronously using an in memory database.
- * Returns the statement result as an XLOPER12 value.
+ * 
  */
-DLLEXPORT LPXLOPER12 WINAPI exec_sync_no_init(
-    const wchar_t *sql,
-    WORKSHEET_PARAM_AND_TYPE_LIST
-);
-
-/* Execute SQL asynchronously using an in memory database. */
-DLLEXPORT void WINAPI exec_async_no_init(
-    LPXLOPER12 asyncHandle,
-    const wchar_t *sql,
+DLLEXPORT LPXLOPER12 WINAPI render(
+    const wchar_t *template_str,
     WORKSHEET_PARAM_AND_TYPE_LIST
 );
 
 /*
- * Retrieve information about the add-in version and
- * runtime environment.
+ * Retrieve information about the add-in version.
  */
 DLLEXPORT LPXLOPER12 WINAPI addin_info(void);
 
-/* Execute initialization and main SQL synchronously using an in memory database. */
-DLLEXPORT LPXLOPER12 WINAPI exec_sync_with_init(
-    const wchar_t *init_sql,
-    const wchar_t *sql,
-    WORKSHEET_PARAM_AND_TYPE_LIST
-);
-
-/* Execute initialization and main SQL asynchronously using an in memory database. */
-DLLEXPORT void WINAPI exec_async_with_init(
-    LPXLOPER12 asyncHandle,
-    const wchar_t *init_sql,
-    const wchar_t *sql,
-    WORKSHEET_PARAM_AND_TYPE_LIST
-);
-
-/* Execute SQL synchronously using a DuckDB file as the default database. */
-DLLEXPORT LPXLOPER12 WINAPI attach_and_exec_sync_no_init(
-	const wchar_t *db_path,
-    const wchar_t *sql,
-    WORKSHEET_PARAM_AND_TYPE_LIST
-);
-
-/* Execute SQL asynchronously using a DuckDB file as the default database. */
-DLLEXPORT void WINAPI attach_and_exec_async_no_init(
-    LPXLOPER12 asyncHandle,
-	const wchar_t *db_path,
-    const wchar_t *sql,
-    WORKSHEET_PARAM_AND_TYPE_LIST
-);
-
-/* Execute initialization and main SQL synchronously using a DuckDB file. */
-DLLEXPORT LPXLOPER12 WINAPI attach_and_exec_sync_with_init(
-	const wchar_t *db_path,
-    const wchar_t *init_sql,
-    const wchar_t *sql,
-    WORKSHEET_PARAM_AND_TYPE_LIST
-);
-
-/* Execute initialization and main SQL asynchronously using a DuckDB file. */
-DLLEXPORT void WINAPI attach_and_exec_async_with_init(
-    LPXLOPER12 asyncHandle,
-	const wchar_t *db_path,
-    const wchar_t *init_sql,
-    const wchar_t *sql,
-    WORKSHEET_PARAM_AND_TYPE_LIST
-);
-
-#undef DLLEXPORT
+#undef XLTEMPLATE_H
 
 #ifdef __cplusplus
 }
 #endif
 
-#endif /* DUCKDB_EXCEL_ADDIN_H */
+#endif /* XLTEMPLATE_H */

@@ -13,20 +13,6 @@
 #define ADDIN_VERSION               "dev"
 #endif
 
-#define DUCKDB_REQUIRED_VERSION     "1.5.0"
-
-/* DuckDB */
-#define DUCKDB_DLL                  L"duckdb.dll"
-
-/*
- * Excel limits.
- *
- * These values are defined by Excel and must not be modified.
- */
-#define XL_MAX_ROW                  0x00100000
-#define XL_MAX_COL                  0x00004000
-#define XLSTR_MAX_LEN               0x00007fff
-
 /*
  * XLOPER12 constants defined by the Excel C API.
  *
@@ -37,9 +23,6 @@
 /* Internal limits */
 #define ERR_MSG_MAX_LEN             512
 #define MSG_MAX_LENGTH              512
-
-/* xlrange() */
-#define XLRANGE_DEFAULT_SAMPLE_COUNT 30
 
 /*
  * Worksheet functions expose 128 optional parameters by default.
@@ -63,50 +46,11 @@
     X(121) X(122) X(123) X(124) X(125) X(126) X(127) Y(128)
 
 /* Excel function category */
-#define FUNCTION_CATEGORY           L"DuckDB"
-
-/*
- * Constants used when converting Excel date/time values
- * to DuckDB temporal types.
- */
-
-/*
- * Number of days between the Excel epoch (1899-12-30)
- * and the Unix epoch (1970-01-01).
- */
-#define EPOCH_DELTA                 25569
-
-#define S_PER_DAY                   86400.0             /* Seconds per day */
-#define MS_PER_DAY                  86400000.0          /* milliseconds per day */
-#define US_PER_DAY                  86400000000.0       /* microseconds per day */
-#define NS_PER_DAY                  86400000000000.0    /* nanoseconds per day */
-
-/*
- * Number of bits used to store the UTC offset component
- * in DuckDB TIME WITH TIME ZONE values.
- */
-#define TIMETZ_OFFSET_BITS          24
+#define FUNCTION_CATEGORY           L"xlTemplate"
 
 /*
  * Floating-point comparison tolerance.
  */
 #define EPSILON                     1e-12 
-
-/*
- * Powers of 10 used for DECIMAL scaling.
- *
- * DuckDB currently supports a maximum DECIMAL scale of 18.
- *
- */
-static const double DEC_DIVISORS[] = {
-    1e0,    1e1,    1e2,    1e3,    1e4,    1e5,    1e6,    1e7,    1e8,    1e9,
-    1e10,   1e11,   1e12,   1e13,   1e14,   1e15,   1e16,   1e17,   1e18
-};
-
-/*
- * Constant for xlrange
- */
-#define GENERATED_COLNAME_SIZE 		30
-#define SUFFIX_LEN					20
 
 #endif /* CONFIG_H */
