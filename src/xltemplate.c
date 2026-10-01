@@ -12,8 +12,8 @@
 typedef struct data_dict_t {
     char           *key;
     LPXLOPER12     val;
-    char           *utf8_str;   /* Owned UTF-8 representation of val when val is xltypeStr. */
-    size_t         utf8_len;
+    size_t         count;       /* Member count for array */
+    size_t         next;        /* Array next index */
     UT_hash_handle hh;
 } data_dict_t;
 
@@ -26,7 +26,7 @@ typedef struct context_t {
 } context_t;
 
 #define BLOCK_SIZE ((size_t)1024)
-#define INITIAL_RENDERER_CAPACITY ((size_t)64)
+#define INITIAL_PROGRAM_CAPACITY ((size_t)64)
 
 #define ERR_MSG_INFO "Error: Failed to get add-in info."
 
@@ -179,7 +179,6 @@ static void free_hash(data_dict_t *data_dict)
     {
         HASH_DEL(data_dict, p);
         free(p->key);
-        free(p->utf8_str);
         free(p);
     }
 }
@@ -194,25 +193,23 @@ static int parse_params(
     LPXLOPER12 params[] = { WORKSHEET_PARAM_LIST };
     const size_t max_params = sizeof(params) / sizeof(params[0]);
 
-    data_dict_t *data_dict = NULL;
-    data_dict_t *pair = NULL;
-    char *key_utf8 = NULL;
-    char *val_utf8 = NULL;
-    size_t utf8_len = 0;
-
     if (!out_data_dict || max_params % 2 != 0)
         return 0;
 
     *out_data_dict = NULL;
 
-    size_t npairs = 0;
+    data_dict_t *data_dict = NULL;
+    data_dict_t *pair = NULL;
+    char        *key_utf8 = NULL;
+    size_t      count = 0;
+    size_t      npairs = 0;
+
     size_t pos = max_params;
     while (pos > 0)
     {
-        const size_t key_idx = pos - 2;
+        size_t key_idx = pos - 2;
         LPXLOPER12 key = params[key_idx];
         LPXLOPER12 val = params[key_idx + 1];
-
         if (!key || !val)
             goto fail;
 
@@ -230,32 +227,22 @@ static int parse_params(
 
     for (size_t i = 0; i < npairs; i++)
     {
-        val_utf8 = NULL;
-        utf8_len = 0;
-
         LPXLOPER12 key = params[i * 2];
         LPXLOPER12 val = params[i * 2 + 1];
-
-        if (!key 
-            || !val
-            || LPXLOPER12_TYPE(key) != xltypeStr)
-        {
+        if (!key || !val || LPXLOPER12_TYPE(key) != xltypeStr)
             goto fail;
-        }
 
         switch (LPXLOPER12_TYPE(val)) {
             case xltypeInt:
             case xltypeNum:
             case xltypeBool:
-                break;
             case xltypeStr:
-            {
-                const wchar_t *src = val->val.str;
-                if (!src || xlstr_to_utf8(&val_utf8, src, &utf8_len) == 0 || !val_utf8)
-                    goto fail;
-
                 break;
-            }
+
+            case xltypeMulti:
+                count = val->val.array.rows * val->val.array.rows;
+                break;
+
             default:
                 goto fail;
         }
@@ -276,9 +263,8 @@ static int parse_params(
         pair->key = key_utf8;
         key_utf8 = NULL;
         pair->val = val;
-        pair->utf8_str = val_utf8;
-        val_utf8 = NULL;
-        pair->utf8_len = utf8_len;
+        pair->count = count;
+        pair->next = 0;
 
         HASH_ADD_STR(data_dict, key, pair);
         pair = NULL;
@@ -291,12 +277,10 @@ static int parse_params(
 fail:
 
     free(key_utf8);
-    free(val_utf8);
 
     if (pair)
     {
         free(pair->key);
-        free(pair->utf8_str);
         free(pair);
     }
 
@@ -323,13 +307,62 @@ LPXLOPER12 WINAPI addin_info(void)
     return make_string_cell(buf);
 }
 
+bool get_next(
+    void *data,
+    tinytemplate_value_t *dst_val)
+{
+    if (!data || !dst_val)
+        return false;
+
+    data_dict_t *pair = data;
+    if (pair->next == pair->count)
+        return false;
+
+    LPXLOPER12 cell = pair->val->val.array.lparray + pair->next;
+    pair->next++;
+    switch (LPXLOPER12_TYPE(cell)) {
+        case xltypeInt:
+            tinytemplate_set_int(dst_val, (int64_t)(cell->val.w));
+            return true;
+
+        case xltypeNum:
+            tinytemplate_set_double(dst_val, cell->val.num);
+            return true;
+
+        case xltypeBool:
+            if (cell->val.xbool == true)
+                tinytemplate_set_string(dst_val, "TRUE", 4);
+            else
+                tinytemplate_set_string(dst_val, "FALSE", 5);
+            return true;
+
+        case xltypeStr:
+        {
+            const wchar_t *src = cell->val.str;
+            char *dst = NULL;
+            size_t utf8_len = 0;
+            if (!src || xlstr_to_utf8(&dst, src, &utf8_len) == 0 || !dst)
+            {
+                free(dst);
+                return false;
+            }
+            tinytemplate_set_string(dst_val, dst, utf8_len);
+            free(dst);
+            return true;
+        }
+
+        default:
+            return false;
+    }
+}
+
 static bool get_param(
     void *data,
     const char *key,
     size_t len, 
     tinytemplate_value_t *dst_val)
 {
-    if (!data || !key || !dst_val)
+    if (!data || !key || len == 0 || !dst_val)
         return false;
 
     context_t *ctx = data;
@@ -344,20 +377,35 @@ static bool get_param(
         case xltypeInt:
             tinytemplate_set_int(dst_val, (int64_t)(val->val.w));
             return true;
+
         case xltypeNum:
             tinytemplate_set_double(dst_val, val->val.num);
             return true;
+
         case xltypeBool:
             if (val->val.xbool == true)
                 tinytemplate_set_string(dst_val, "TRUE", 4);
             else
                 tinytemplate_set_string(dst_val, "FALSE", 5);
             return true;
-        case xltypeStr:
-            if (!pair->utf8_str)
-                return false;
 
-            tinytemplate_set_string(dst_val, pair->utf8_str, pair->utf8_len);
+        case xltypeStr:
+        {
+            const wchar_t *src = val->val.str;
+            char *dst = NULL;
+            size_t utf8_len = 0;
+            if (!src || xlstr_to_utf8(&dst, src, &utf8_len) == 0 || !dst)
+            {
+                free(dst);
+                return false;
+            }
+            tinytemplate_set_string(dst_val, dst, utf8_len);
+            free(dst);
+            return true;
+        }
+
+        case xltypeMulti:
+            tinytemplate_set_array(dst_val, pair, get_next);
             return true;
 
         default:
@@ -416,40 +464,45 @@ static void writer(
 static tinytemplate_status_t compile_template(
     const char *template_str,
     size_t template_len,
-    tinytemplate_instr_t **out_renderer,
+    tinytemplate_instr_t **out_render_prog,
     size_t *out_num_instr)
 {
-    if (!template_str || !out_renderer || !out_num_instr)
+    if (!template_str 
+        || template_len == 0 
+        || !out_render_prog 
+        || !out_num_instr)
+    {
         return TINYTEMPLATE_STATUS_EMEMORY;
+    }
 
-    *out_renderer = NULL;
+    *out_render_prog = NULL;
     *out_num_instr = 0;
 
-    size_t capacity = INITIAL_RENDERER_CAPACITY;
-
+    size_t capacity = INITIAL_PROGRAM_CAPACITY;
     for (;;)
     {
         if (capacity > SIZE_MAX / sizeof(tinytemplate_instr_t))
             return TINYTEMPLATE_STATUS_EMEMORY;
 
-        tinytemplate_instr_t *renderer = realloc(
-            *out_renderer,
-            capacity * sizeof(*renderer)
+        tinytemplate_instr_t *render_prog = realloc(
+            *out_render_prog,
+            capacity * sizeof(*render_prog)
         );
-        if (!renderer)
+        if (!render_prog)
             return TINYTEMPLATE_STATUS_EMEMORY;
             
-        *out_renderer = renderer;
+        *out_render_prog = render_prog;
 
         size_t num_instr = 0;
         tinytemplate_status_t status = tinytemplate_compile(
             template_str,
             template_len,
-            renderer,
+            render_prog,
             capacity,
             &num_instr,
             NULL,
-            0);
+            0
+        );
 
         if (status == TINYTEMPLATE_STATUS_DONE)
         {
@@ -471,30 +524,30 @@ LPXLOPER12 WINAPI render(
     const wchar_t *template_str,
     WORKSHEET_PARAM_AND_TYPE_LIST)
 {
-    data_dict_t *data_dict = NULL;
-    LPXLOPER12 result = NULL;
-    char *template_str_utf8 = NULL;
-    tinytemplate_instr_t *renderer = NULL;
-    context_t *ctx = NULL;
+    LPXLOPER12              result = NULL;
+    data_dict_t             *data_dict = NULL;
+    char                    *template_utf8 = NULL;
+    tinytemplate_instr_t    *render_prog = NULL;
+    context_t               *ctx = NULL;
 
     size_t utf8_len = 0;
     if (!template_str
-        || xlstr_to_utf8(&template_str_utf8, template_str, &utf8_len) == 0
-        || !template_str_utf8)
+        || xlstr_to_utf8(&template_utf8, template_str, &utf8_len) == 0
+        || !template_utf8)
     {
         goto cleanup;
     }
 
     size_t num_instr = 0;
     if(compile_template(
-        template_str_utf8,
+        template_utf8,
         utf8_len,
-        &renderer,
+        &render_prog,
         &num_instr
     ) != TINYTEMPLATE_STATUS_DONE)
     {
         goto cleanup;
-    } 
+    }
 
     ctx = calloc(1, sizeof(*ctx));
     if (!ctx)
@@ -507,8 +560,8 @@ LPXLOPER12 WINAPI render(
     data_dict = NULL;
 
     if (tinytemplate_eval(
-        template_str_utf8,
-        renderer,
+        template_utf8,
+        render_prog,
         ctx,
         get_param,
         writer,
@@ -523,8 +576,8 @@ LPXLOPER12 WINAPI render(
 
 cleanup:
 
-    free(renderer);
-    free(template_str_utf8);
+    free(render_prog);
+    free(template_utf8);
     free_hash(data_dict);
 
     if (ctx)
