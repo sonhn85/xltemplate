@@ -15,22 +15,26 @@
  * These macros ensure that worksheet function signatures and Excel
  * registration metadata remain consistent.
  */
-#define WORKSHEET_PARAMX(X) param##X
-#define WORKSHEET_PARAMX_SEPARATED(X) param##X,
+#define KEY(X) key##X
+#define KEY_SEPARATED(X) key##X,
+#define VALUE(X) value##X
+#define VALUE_SEPARATED(X) value##X,
 /* Registration type code for an LPXLOPER12 argument. */
 #define TYPE_SYMBOL(X) L"Q"
-#define WORKSHEET_PARAM_AND_TYPE(X) LPXLOPER12 WORKSHEET_PARAMX(X)
-#define WORKSHEET_PARAM_AND_TYPE_SEPARATED(X) LPXLOPER12 WORKSHEET_PARAMX(X),
-#define WORKSHEET_PARAM_HELP(X) L"param"
-#define WORKSHEET_PARAM_HELP_SEPARATED(X) L"param,"
+#define KEY_AND_TYPE_SEPARATED(X) LPXLOPER12 KEY(X),
+#define VALUE_AND_TYPE(X) LPXLOPER12 VALUE(X)
+#define VALUE_AND_TYPE_SEPARATED(X) LPXLOPER12 VALUE(X),
+#define KEY_HELP_SEPARATED(X) L"key,"
+#define VALUE_HELP(X) L"value"
+#define VALUE_HELP_SEPARATED(X) L"value,"
 /* List of parameters (comma-separated) */
-#define WORKSHEET_PARAM_LIST WORKSHEET_PARAMS(WORKSHEET_PARAMX_SEPARATED, WORKSHEET_PARAMX)
+#define WORKSHEET_PARAM_LIST WORKSHEET_PARAMS(KEY_SEPARATED, VALUE_SEPARATED, VALUE)
 /* Type codes for parameters (not comma-separated) */
-#define WORKSHEET_PARAM_STRING WORKSHEET_PARAMS(TYPE_SYMBOL, TYPE_SYMBOL)
+#define WORKSHEET_PARAM_STRING WORKSHEET_PARAMS(TYPE_SYMBOL, TYPE_SYMBOL, TYPE_SYMBOL)
 /* Type and name pair of parameters (comma-separated) */
-#define WORKSHEET_PARAM_AND_TYPE_LIST WORKSHEET_PARAMS(WORKSHEET_PARAM_AND_TYPE_SEPARATED, WORKSHEET_PARAM_AND_TYPE)
+#define WORKSHEET_PARAM_AND_TYPE_LIST WORKSHEET_PARAMS(KEY_AND_TYPE_SEPARATED, VALUE_AND_TYPE_SEPARATED, VALUE_AND_TYPE)
 /* Comma-separated parameter help text. */
-#define HELP_TEXT L"template," WORKSHEET_PARAMS(WORKSHEET_PARAM_HELP_SEPARATED, WORKSHEET_PARAM_HELP)
+#define HELP_TEXT L"template," WORKSHEET_PARAMS(KEY_HELP_SEPARATED, VALUE_HELP_SEPARATED, VALUE_HELP)
 /* Complete Excel registration type string. */
 #define TYPE_STRING(PREFIX, SUFFIX) PREFIX WORKSHEET_PARAM_STRING SUFFIX
 
@@ -81,8 +85,6 @@ DLLEXPORT LPXLOPER12 WINAPI render(
  * Retrieve information about the add-in version.
  */
 DLLEXPORT LPXLOPER12 WINAPI addin_info(void);
-
-#undef XLTEMPLATE_H
 
 #ifdef __cplusplus
 }
