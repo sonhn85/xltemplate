@@ -1,49 +1,35 @@
-#include <process.h>
-#include <wchar.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
 
-#include "DuckDBExcelAddin.h"
-#include "db_lib_loader.h"
-#include "db_fetch.h"
-#include "db_xlrange.h"
-#include "db_scalar_funcs.h"
+#include "xltemplate.h"
+#include "uthash.h"
+#include "tinytemplate.h"
 
-#define ERR_MSG_INTERNAL                      "Error: An internal error occurred."
-#define ERR_MSG_INVALID_PARAM                 "Error: Invalid parameters."
-#define ERR_MSG_PARAM_BIND_FAILURE            "Error: Parameter binding failed."
-#define ERR_MSG_DUCKDB_INIT_FAILURE           "Error: DuckDB initialization failed."
-#define ERR_MSG_TEXT_CONVERSION_FAILURE       "Error: Text conversion failed."
-#define ERR_MSG_SQL_EMPTY                     "Error: Empty sql."
-#define ERR_MSG_STMT_PREPARE_FAILURE          "Error: Statement preparation failed."
-#define ERR_MSG_STMT_EXEC_FAILURE             "Error: Statement execution failed."
-#define ERR_MSG_INIT_SQL_EXEC_FAILURE         "Error: Initialization SQL execution failed."
-#define ERR_MSG_RESULT_FETCH_FAILURE          "Error: Result fetch failed."
-#define ERR_MSG_XLRANGE_REGISTER_FAILURE      "Error: xlrange registration failed."
-#define ERR_MSG_EXTRACT_STMTS_FAILURE         "Error: Statement parsing failed."
-#define ERR_MSG_INFO                          "Error: Failed to get add-in info."
-#define ERR_MSG_SCALAR_FUNCS_REGISTER_FAILURE "Error: Scalar functions registration failed."
+typedef struct data_dict_t {
+    char           *key;
+    LPXLOPER12     val;
+    char           *utf8_str;   /* Owned UTF-8 representation of val when val is xltypeStr. */
+    size_t         utf8_len;
+    UT_hash_handle hh;
+} data_dict_t;
 
-/* DuckDB runtime and asynchronous worker state. */
-static HMODULE g_duckdb_dll = NULL;
-static duckdb_instance_cache db_cache = NULL;
-static volatile LONG unloading = 0;
-static volatile LONG active_workers = 0;
+typedef struct context_t {
+    data_dict_t *data_dict;
+    char        *output_buffer;
+    size_t      output_capacity;
+    size_t      output_len;
+    bool        failed;
+} context_t;
 
-/* Owned data required by an asynchronous worker. */
-typedef struct async_context_t
-{
-    LPXLOPER12 asyncHandle; /* Borrowed Excel asynchronous handle. */
-	wchar_t *db_path;
-    wchar_t *init_sql;
-    wchar_t *sql;
-    XLOPER12 *ranges;
-    size_t nranges;
-    XLOPER12 *params;
-    size_t nparams;
-    const char *err_msg;
-} async_context_t;
+#define BLOCK_SIZE ((size_t)1024)
+
+#define COUNT(X) ((int) (sizeof(X) / sizeof((X)[0])))
+
+#define ERR_MSG_INFO "Error: Failed to get add-in info."
 
 /* Look up each registered function ID and unregister it. */
 static void unreg_funcs(const LPXLOPER12 xllPath)
@@ -67,7 +53,7 @@ static void unreg_funcs(const LPXLOPER12 xllPath)
     XLL_FUNCTIONS(UNREGISTER_FUNCTION)
 }
 
-/* Unregister worksheet functions and unload DuckDB. */
+/* Unregister worksheet functions. */
 static void xlUnload(void)
 {
     XLOPER12 xllPath;
@@ -77,39 +63,24 @@ static void xlUnload(void)
         unreg_funcs(&xllPath);
         Excel12f(xlFree, NULL, 1, &xllPath);
     }
-
-    if (g_duckdb_dll)
-    {
-        FreeLibrary(g_duckdb_dll);
-        g_duckdb_dll = NULL;
-    }
 }
 
 int WINAPI xlAutoOpen(void)
 {
-    XLOPER12 xllPath;
     XLOPER12 handle;
+    XLOPER12 xllPath;
 
-    if (Excel12f(xlGetName, &xllPath, 0) != xlretSuccess) 
+    if (Excel12f(xlGetName, &xllPath, 0) != xlretSuccess)
         return 0;
 
     if (Excel12f(xlGetHwnd, &handle, 0) != xlretSuccess)
-    {
-        Excel12f(xlFree, 0, 1, &xllPath);        
+    {   
+        Excel12f(xlFree, 0, 1, &xllPath); 
         return 0;
     }
 
     HWND hwnd = (HWND)(INT_PTR)handle.val.w;
-
     Excel12f(xlFree, 0, 1, &handle); 
-
-    int result = 0;
-
-    /* Load DuckDB from the add-in directory */
-    g_duckdb_dll = load_duckdb(hwnd, xllPath.val.str, DUCKDB_DLL);
-
-    if (!g_duckdb_dll)
-        goto cleanup;
 
     /* Register worksheet functions */
     #define REGISTER_FUNCTION(XLLNAME, XLNAME, PARAMS, HELP_TEXT, CATEGORY) \
@@ -128,51 +99,20 @@ int WINAPI xlAutoOpen(void)
 
     XLL_FUNCTIONS(REGISTER_FUNCTION)
 
-    goto init_db_cache;
+    return 1;
 
 register_failure:
 
     show_error(hwnd, L"Fail to register worksheet functions");
-    result = 0;
-	goto unload;
-
-init_db_cache:
-
-	db_cache = DUCKDB_CREATE_INSTANCE_CACHE();
-	
-	if (!db_cache) {
-		show_error(hwnd, L"Fail to create database instance cache");
-		result = 0;
-		goto unload;
-	}
-
-    InterlockedExchange(&active_workers, 0);
-    InterlockedExchange(&unloading, 0);
-	result = 1;
-	goto cleanup;
-
-unload:
 	xlUnload();
-
-cleanup:
 
     Excel12f(xlFree, 0, 1, &xllPath); 
 
-    return result;
+    return 0;
 }
 
 int WINAPI xlAutoRemove(void)
 {
-    InterlockedExchange(&unloading, 1);
-
-    while (InterlockedCompareExchange(&active_workers, 0, 0) != 0)
-        Sleep(10);
-
-	if (db_cache) {
-		DUCKDB_DESTROY_INSTANCE_CACHE(&db_cache);
-        db_cache = NULL;
-    }
-
     xlUnload();
 	
     return 1;
@@ -185,8 +125,13 @@ int WINAPI xlAutoClose(void)
 
 void WINAPI xlAutoFree12(LPXLOPER12 pxFree)
 {
-    if (!pxFree) return;
-    xloper12_free(pxFree);
+    if (!pxFree || !LPXLOPER12_DLL_FREE(pxFree))
+        return;
+
+    if (LPXLOPER12_TYPE(pxFree) == xltypeStr)
+        free(pxFree->val.str);
+
+    free(pxFree);
 }
 
 LPXLOPER12 WINAPI xlAddInManagerInfo12(LPXLOPER12 pxAction)
@@ -197,7 +142,6 @@ LPXLOPER12 WINAPI xlAddInManagerInfo12(LPXLOPER12 pxAction)
         return NULL;
 
     XLOPER12 xIntAction;
-
     if(Excel12f(
         xlCoerce,
         &xIntAction,
@@ -227,719 +171,149 @@ LPXLOPER12 WINAPI xlAddInManagerInfo12(LPXLOPER12 pxAction)
     return xInfo;
 }
 
+static void free_hash(data_dict_t *data_dict)
+{
+    data_dict_t *p, *tmp;
+    HASH_ITER(hh, data_dict, p, tmp)
+    {
+        HASH_DEL(data_dict, p);
+        free(p->key);
+        free(p->utf8_str);
+        free(p);
+    }
+}
+
 /*
- * Split worksheet arguments into leading ranges and trailing bind parameters.
- * Deep-copy values for asynchronous execution; otherwise create borrowed copies.
+ * 
  */
-static int split_worksheet_params(
-    XLOPER12 **ranges,
-    size_t *nranges,
-    XLOPER12 **bind_params,
-    size_t *nparams,
-    bool deep_copy,
+static int parse_params(
+    data_dict_t **out_data_dict,
     WORKSHEET_PARAM_AND_TYPE_LIST)
 {
-    if (!bind_params || !ranges || !nparams || !nranges)
-        return 0;
-
-    *ranges = *bind_params = NULL;
-    *nranges = *nparams = 0;
-
     LPXLOPER12 params[] = { WORKSHEET_PARAM_LIST };
+    const size_t max_params = sizeof(params) / sizeof(params[0]);
 
-    size_t max_params = sizeof(params) / sizeof(params[0]);
+    data_dict_t *data_dict = NULL;
+    data_dict_t *pair = NULL;
+    char *key_utf8 = NULL;
+    char *val_utf8 = NULL;
+    size_t utf8_len = 0;
 
-    size_t range_count = 0;
-
-    for (size_t i = 0; i < max_params; i++)
-    {
-        LPXLOPER12 param = params[i];
-
-        if (!param)
-            return 0;       /* Reject NULL */
-
-        if (LPXLOPER12_TYPE(param) == xltypeMulti)
-            ++range_count;
-        else
-            break;
-    }
-
-    size_t last_param = 0;
-
-    for (size_t i = range_count; i < max_params; i++)
-    {
-        LPXLOPER12 param = params[i];
-
-        if (!param) 
-            return 0;       /* Reject NULL */
-
-        int type = LPXLOPER12_TYPE(param);
-
-        if (type == xltypeMulti)
-            return 0;
-
-        if (type != xltypeMissing)
-            last_param = i + 1;
-    }
-
-    size_t param_count = (last_param > range_count)
-        ? (last_param - range_count)
-        : 0;
-
-    LPXLOPER12 ranges_tmp = (range_count > 0)
-        ? calloc(range_count, sizeof(*ranges_tmp))
-        : NULL;
-
-    LPXLOPER12 bind_params_tmp = (param_count > 0)
-        ? calloc(param_count, sizeof(*bind_params_tmp))
-        : NULL;
-
-    if ((range_count && !ranges_tmp) || (param_count && !bind_params_tmp))
-    {
-        free(ranges_tmp);
-        free(bind_params_tmp);
+    if (!out_data_dict || max_params % 2 != 0)
         return 0;
-    }
 
-    if (deep_copy)
+    *out_data_dict = NULL;
+
+    size_t npairs = 0;
+    size_t pos = max_params;
+    while (pos > 0)
     {
-        for (size_t i = 0; i < range_count; i++)
+        const size_t key_idx = pos - 2;
+        LPXLOPER12 key = params[key_idx];
+        LPXLOPER12 val = params[key_idx + 1];
+
+        if (!key || !val)
+            goto fail;
+
+        if (LPXLOPER12_TYPE(key) != xltypeMissing)
         {
-            if (xloper12_deep_copy(&ranges_tmp[i], params[i]) == 0)
-            {
-                goto cleanup;
-            }
+            if (LPXLOPER12_TYPE(key) != xltypeStr)
+                goto fail;
+
+            npairs = key_idx / 2 + 1;
+            break;
         }
 
-        for (size_t i = 0; i < param_count; i++)
-        {
-            if (xloper12_deep_copy(&bind_params_tmp[i], params[range_count + i]) == 0)
-            {
-                goto cleanup;
-            }
-        }
+        pos -= 2;
     }
-    else
+
+    for (size_t i = 0; i < npairs; i++)
     {
-        for (size_t i = 0; i < range_count; i++)
+        val_utf8 = NULL;
+        utf8_len = 0;
+
+        LPXLOPER12 key = params[i * 2];
+        LPXLOPER12 val = params[i * 2 + 1];
+
+        if (!key 
+            || !val
+            || LPXLOPER12_TYPE(key) != xltypeStr)
         {
-            ranges_tmp[i] = *params[i];
-            XLOPER12_CLEAR_OWNER_FLAGS(ranges_tmp[i]);
+            goto fail;
         }
 
-        for (size_t i = 0; i < param_count; i++) 
-        {
-            bind_params_tmp[i] = *params[range_count + i];
-            XLOPER12_CLEAR_OWNER_FLAGS(bind_params_tmp[i]);
+        switch (LPXLOPER12_TYPE(val)) {
+            case xltypeInt:
+            case xltypeNum:
+            case xltypeBool:
+                break;
+            case xltypeStr:
+            {
+                const wchar_t *src = val->val.str;
+                if (!src || xlstr_to_utf8(&val_utf8, src, &utf8_len) == 0 || !val_utf8)
+                    goto fail;
+
+                break;
+            }
+            default:
+                goto fail;
         }
+
+        const wchar_t *src = key->val.str;
+        if (!src || xlstr_to_utf8(&key_utf8, src, NULL) == 0 || !key_utf8)
+            goto fail;
+
+        data_dict_t *existing = NULL;
+        HASH_FIND_STR(data_dict, key_utf8, existing);
+        if (existing)
+            goto fail;
+
+        pair = calloc(1, sizeof(*pair));
+        if (!pair)
+            goto fail;
+
+        pair->key = key_utf8;
+        key_utf8 = NULL;
+        pair->val = val;
+        pair->utf8_str = val_utf8;
+        val_utf8 = NULL;
+        pair->utf8_len = utf8_len;
+
+        HASH_ADD_STR(data_dict, key, pair);
+        pair = NULL;
     }
 
-    *bind_params = bind_params_tmp;
-    *nparams = param_count;
-    *ranges = ranges_tmp;
-    *nranges = range_count;
+    *out_data_dict = data_dict;
 
     return 1;
 
-cleanup:
-    if (ranges_tmp) xloper12_free_array(ranges_tmp, range_count);
-    if (bind_params_tmp) xloper12_free_array(bind_params_tmp, param_count);
-	
-    return 0;
-}
+fail:
 
-/*
- * Bind parameters to a prepared statement.
- *
- * Returns the number of bound placeholders on success,
- * or -1 on failure.
- */
-static int bind_params(
-    duckdb_prepared_statement stmt,
-    const XLOPER12 *params,
-    size_t nparams) 
-{
-    if (nparams > 0 && !params)
-        return -1;
+    free(key_utf8);
+    free(val_utf8);
 
-    size_t nplaceholders = (size_t)DUCKDB_NPARAMS(stmt);
-
-    if (nparams < nplaceholders)
-        return -1;
-
-    for (size_t i = 0; i < nplaceholders; i++)
+    if (pair)
     {
-        const XLOPER12 *param = &params[i];
-
-        idx_t param_idx =  (idx_t)i + 1;
-        
-        switch (LPXLOPER12_TYPE(param))
-        {
-            case xltypeNum:
-                if (DUCKDB_BIND_DOUBLE(stmt, param_idx, param->val.num) != DuckDBSuccess)
-                    return -1;
-
-                break;
-
-            case xltypeInt:
-                if (DUCKDB_BIND_INT32(stmt, param_idx, param->val.w) != DuckDBSuccess)
-                    return -1;
-
-                break;
-
-            case xltypeBool:
-                if (DUCKDB_BIND_BOOLEAN(stmt, param_idx, param->val.xbool) != DuckDBSuccess)
-                    return -1;
-
-                break;
-
-            case xltypeStr:
-            {
-                char *str = NULL;
-
-                if (xlstr_to_utf8(&str, param->val.str, NULL) == 0)
-                    return -1;
-
-                duckdb_state state = str
-                    ? DUCKDB_BIND_VARCHAR(stmt, param_idx, str)
-                    : DUCKDB_BIND_NULL(stmt, param_idx);
-
-                free(str);
-                
-                if(state != DuckDBSuccess)
-                    return -1;
-
-                break;
-            }
-
-            case xltypeMissing:
-            case xltypeNil:
-                if (DUCKDB_BIND_NULL(stmt, param_idx) != DuckDBSuccess)
-                    return -1;
-
-                break;
-
-            case xltypeErr:
-                switch (param->val.err)
-                {
-                    case xlerrNA:
-                    case xlerrNull:
-                        if(DUCKDB_BIND_NULL(stmt, param_idx) != DuckDBSuccess)
-                            return -1;
-
-                        break;
-
-                    default:
-                        return -1;
-                }
-                break;
-
-            default:
-                return -1;
-        }
+        free(pair->key);
+        free(pair->utf8_str);
+        free(pair);
     }
 
-    return nplaceholders;
-}
-
-/*
- * Execute initialization and main SQL, returning the final result as an
- * add-in-owned Excel value.
- *
- * Multiple statements execute sequentially and consume bind parameters
- * in statement order. Only the final statement result is returned.
- */
-static LPXLOPER12 run_sql_create_range(
-	const wchar_t *db_path,
-    const wchar_t *init_sql,
-    const wchar_t *sql,
-    XLOPER12 *ranges,
-    size_t nranges,
-    XLOPER12 *params,
-    size_t nparams)
-{
-    char *db_path_utf8 = NULL;
-	char *sql_utf8 = NULL;
-    char *init_sql_utf8 = NULL;
-    duckdb_database db = NULL;
-    duckdb_connection con = NULL;
-    duckdb_table_function xlrange_func = NULL;
-    duckdb_scalar_function_set xldate_func = NULL;
-    duckdb_scalar_function_set xltime_func = NULL;
-    duckdb_scalar_function_set xldatetime_func = NULL;
-    duckdb_extracted_statements extracted_stmts = NULL;
-    idx_t stmt_count = 0;
-    LPXLOPER12 result = NULL;
-
-    char errmsg[ERR_MSG_MAX_LEN];
-    errmsg[0] = '\0';
-
-    if (is_null_or_whitespace_xlstr(sql))
-    {
-        result = make_string_cell(ERR_MSG_SQL_EMPTY);
-        goto cleanup;
-    }
-
-    if (xlstr_to_utf8(&sql_utf8, sql, NULL) == 0
-        || (!is_null_or_whitespace_xlstr(init_sql) && xlstr_to_utf8(&init_sql_utf8, init_sql, NULL) == 0)
-		|| (!is_null_or_whitespace_xlstr(db_path) && xlstr_to_utf8(&db_path_utf8, db_path, NULL) == 0))
-    {
-        result = make_string_cell(ERR_MSG_TEXT_CONVERSION_FAILURE);
-        goto cleanup;
-    }
-  
-	if (is_null_or_whitespace_xlstr(db_path))
-	{
-        if (DUCKDB_OPEN(NULL, &db) != DuckDBSuccess)
-        {
-            result = make_string_cell(ERR_MSG_DUCKDB_INIT_FAILURE);
-            goto cleanup;
-        }
-	} else {
-        char *msg = NULL;
-		if (DUCKDB_GET_OR_CREATE_FROM_CACHE(db_cache, db_path_utf8, &db, NULL, &msg) != DuckDBSuccess)
-        {
-            result = make_string_cell(
-                msg ? msg : ERR_MSG_DUCKDB_INIT_FAILURE
-            );
-
-            if (msg)
-                DUCKDB_FREE(msg);
-
-            goto cleanup;
-        }
-	}
-
-    if (DUCKDB_CONNECT(db, &con) != DuckDBSuccess)
-    {
-        result = make_string_cell(ERR_MSG_DUCKDB_INIT_FAILURE);
-        goto cleanup;
-    }
-
-    /* Register Excel date/time conversion scalar functions. */
-    if (register_xldate(con, &xldate_func) == 0
-        || register_xltime(con, &xltime_func) == 0
-        || register_xldatetime(con, &xldatetime_func) == 0)
-    {
-        result = make_string_cell(ERR_MSG_SCALAR_FUNCS_REGISTER_FAILURE);
-        goto cleanup;
-    }
-
-    /* Register xlrange() for accessing worksheet ranges from SQL */
-    if (register_xlrange_func(
-        con,
-        ranges,
-        nranges,
-        &xlrange_func
-    ) == 0)
-    {
-        result = make_string_cell(ERR_MSG_XLRANGE_REGISTER_FAILURE);
-        goto cleanup;
-    }
-
-    /* Execute initialization SQL */
-    if (init_sql_utf8)
-    {
-        duckdb_result qresult = {0};
-
-        if(DUCKDB_QUERY(con, init_sql_utf8, &qresult) != DuckDBSuccess)
-        {
-            const char *msg = DUCKDB_RESULT_ERROR(&qresult);
-            result = make_string_cell(
-                msg ? msg : ERR_MSG_INIT_SQL_EXEC_FAILURE
-            );
-            DUCKDB_DESTROY_RESULT(&qresult);
-            goto cleanup;
-        }
-        DUCKDB_DESTROY_RESULT(&qresult);
-    }
-
-    /* Begin execution of main SQL */
-
-    stmt_count = DUCKDB_EXTRACT_STATEMENTS(con, sql_utf8, &extracted_stmts);
-
-    if(stmt_count == 0)
-    {
-        result = make_string_cell(
-            extracted_stmts 
-                ? DUCKDB_EXTRACT_STATEMENTS_ERROR(extracted_stmts)
-                : ERR_MSG_EXTRACT_STMTS_FAILURE
-        );
-        goto cleanup;
-    }
-
-    for (idx_t i = 0; i < stmt_count; i++)
-    {
-        duckdb_prepared_statement prep_stmt = NULL;
-        duckdb_result qresult = {0};
-        const char *msg;
-        bool ok = false;
-        bool has_qresult = false;
-
-        if(DUCKDB_PREPARE_EXTRACTED_STATEMENT(con, extracted_stmts, i, &prep_stmt) != DuckDBSuccess)
-        {
-            result = make_string_cell(
-                prep_stmt
-                    ? DUCKDB_PREPARE_ERROR(prep_stmt)
-                    : ERR_MSG_STMT_PREPARE_FAILURE
-            );
-            goto step_cleanup;
-        }
-
-        int n_bind = bind_params(prep_stmt, params, nparams);
-
-        if (n_bind < 0)
-        {
-            result = make_string_cell(ERR_MSG_PARAM_BIND_FAILURE);
-            goto step_cleanup;
-        }
-
-        /* Advance past parameters consumed by this statement. */
-        nparams -= (size_t)n_bind;
-
-        if (n_bind > 0)
-            params += n_bind;
-
-        duckdb_state state = DUCKDB_EXECUTE_PREPARED(prep_stmt, &qresult);
-        has_qresult = true;
-
-        if (state != DuckDBSuccess)
-        {
-            msg = DUCKDB_RESULT_ERROR(&qresult);
-            result = make_string_cell(
-                msg ? msg : ERR_MSG_STMT_EXEC_FAILURE
-            );
-            goto step_cleanup;
-        }
-
-        /* Only return the result of the final statement */
-        if ((i + 1) == stmt_count)
-        {
-            chunk_list chunks = {0};
-
-            if (fetch_chunks(&qresult, &chunks, errmsg, sizeof(errmsg)) == 0)
-            {
-                result = make_string_cell(
-                    errmsg[0] ? errmsg : ERR_MSG_RESULT_FETCH_FAILURE
-                );
-                goto step_cleanup;
-            }
-
-            result = chunks_to_range(&chunks);
-
-            free_and_reset_chunk_list(&chunks);
-        }
-
-        ok = true;
-
-    /* Cleanup resources associated with the current statement. */
-    step_cleanup:
-
-        if (has_qresult)
-            DUCKDB_DESTROY_RESULT(&qresult);
-
-        if (prep_stmt)
-            DUCKDB_DESTROY_PREPARE(&prep_stmt);
-
-        if (!ok)
-            break;
-    }
-
-cleanup:
-
-    if (extracted_stmts)
-        DUCKDB_DESTROY_EXTRACTED(&extracted_stmts);
-
-    if (xlrange_func)
-        DUCKDB_DESTROY_TABLE_FUNCTION(&xlrange_func);
-
-    if (xldate_func)
-        DUCKDB_DESTROY_SCALAR_FUNCTION_SET(&xldate_func);
-
-    if (xltime_func)
-        DUCKDB_DESTROY_SCALAR_FUNCTION_SET(&xltime_func);
-
-    if (xldatetime_func)
-        DUCKDB_DESTROY_SCALAR_FUNCTION_SET(&xldatetime_func);
-
-	free(db_path_utf8);
-
-    free(sql_utf8);
-
-    free(init_sql_utf8);
-
-    if (con)
-        DUCKDB_DISCONNECT(&con);
-    
-    if (db)
-        DUCKDB_CLOSE(&db);
-
-    if (!result)
-        result = make_string_cell(ERR_MSG_INTERNAL);
-    
-    return result;
-}
-
-/* Release an asynchronous context and all owned values. */
-static void free_async_context(async_context_t *ctx) {
-    if (!ctx) return;
-    xloper12_free_array(ctx->params, ctx->nparams);
-    xloper12_free_array(ctx->ranges, ctx->nranges);
-    free(ctx->db_path);
-    free(ctx->sql);
-    free(ctx->init_sql);
-    free(ctx);
-}
-
-/*
- * Execute an asynchronous request, return its result to Excel,
- * and release the worker context.
- */
-static unsigned WINAPI run_sql_worker(LPVOID lpParam)
-{
-    async_context_t *ctx = (async_context_t *)lpParam;
-
-    if (!ctx)
-        return 0;
-
-    LPXLOPER12 xl_result;
-
-    if (ctx->err_msg)        
-        xl_result = make_string_cell(ctx->err_msg);
-    else 
-        xl_result = run_sql_create_range(
-			ctx->db_path,
-            ctx->init_sql,
-            ctx->sql,
-            ctx->ranges,
-            ctx->nranges,
-            ctx->params,
-            ctx->nparams
-        );
-
-    if (xl_result && Excel12f(
-        xlAsyncReturn,
-        NULL,
-        2,
-        ctx->asyncHandle,
-        xl_result
-    ) != xlretSuccess)
-    {
-        xloper12_free(xl_result);
-    }
-
-    free_async_context(ctx);
-
-    InterlockedDecrement(&active_workers);
+    free_hash(data_dict);
 
     return 0;
 }
 
-/*
- * Create an asynchronous execution context and
- * queue execution on a worker thread.
- */
-static void exec_async(
-    LPXLOPER12 asyncHandle,
-	const wchar_t *db_path,
-    const wchar_t *init_sql,
-    const wchar_t *sql,
-    WORKSHEET_PARAM_AND_TYPE_LIST)
-{
-    if (!asyncHandle || !sql)
-        return;
-
-    async_context_t *ctx = calloc(1, sizeof(*ctx));
-
-    if (!ctx)
-        return;
-
-    ctx->asyncHandle = asyncHandle;
-
-    size_t db_path_len = 0;
-
-    wchar_t *db_path_copy = NULL;
-
-    size_t sql_len = sql[0];
-
-    wchar_t *sql_copy = malloc((sql_len + 1)*sizeof(*sql_copy));
-
-    size_t init_sql_len = 0;
-
-    wchar_t *init_sql_copy = NULL;
-
-    if (db_path)
-    {
-        db_path_len = db_path[0];
-
-        db_path_copy = malloc((db_path_len + 1)*sizeof(*db_path_copy));
-    }
-    
-    if (init_sql)
-    {
-        init_sql_len = init_sql[0];
-
-        init_sql_copy = malloc((init_sql_len + 1)*sizeof(*init_sql_copy));
-    }
-
-    if (!sql_copy
-	    || (init_sql && !init_sql_copy)
-		|| (db_path && !db_path_copy))
-    {
-		free(db_path_copy);
-        free(sql_copy);
-        free(init_sql_copy);
-
-        ctx->err_msg = ERR_MSG_INTERNAL;
-
-        goto fire_thread;
-    }
-
-    wmemcpy(sql_copy, sql, sql_len + 1);
-    
-    if (init_sql)
-        wmemcpy(init_sql_copy, init_sql, init_sql_len + 1);
-
-    if (db_path)
-        wmemcpy(db_path_copy, db_path, db_path_len + 1);
-
-	ctx->db_path = db_path_copy;
-    ctx->sql = sql_copy;
-    ctx->init_sql = init_sql_copy;
-
-    XLOPER12 *params = NULL;
-    XLOPER12 *ranges = NULL;
-    size_t nparams = 0;
-    size_t nranges = 0;
-
-    if (split_worksheet_params(
-        &ranges,
-        &nranges,
-        &params,
-        &nparams,
-        true,
-        WORKSHEET_PARAM_LIST
-    ) == 0)
-    {
-        ctx->err_msg = ERR_MSG_INVALID_PARAM;
-        goto fire_thread;
-    }
-
-    ctx->params = params;
-    ctx->nparams = nparams;
-    ctx->ranges = ranges;
-    ctx->nranges = nranges;
-
-fire_thread:
-    /* Start a detached worker tracked by active_workers. */
-
-    if (InterlockedCompareExchange(&unloading, 0, 0))
-        goto cleanup;
-
-    InterlockedIncrement(&active_workers);
-
-    if (InterlockedCompareExchange(&unloading, 0, 0))
-    {
-        InterlockedDecrement(&active_workers);
-        goto cleanup;
-    }
-
-    HANDLE thread = (HANDLE)_beginthreadex(
-        NULL,
-        0,
-        run_sql_worker,
-        ctx,
-        0,
-        NULL
-    );
-
-    if (thread)
-    {
-        CloseHandle(thread);
-    }
-    else 
-    {
-        InterlockedDecrement(&active_workers);
-        
-        LPXLOPER12 err = make_string_cell(ERR_MSG_INTERNAL);
-
-        if (err
-            && Excel12f(
-                xlAsyncReturn,
-                NULL,
-                2,
-                ctx->asyncHandle,
-                err
-            ) != xlretSuccess)
-        {
-            xloper12_free(err);
-        }
-
-        goto cleanup;
-    }
-
-    return;
-
-cleanup:
-
-    free_async_context(ctx);
-
-}
-
-static LPXLOPER12 exec_sync(
-	const wchar_t *db_path,
-    const wchar_t *init_sql,
-    const wchar_t *sql,
-    WORKSHEET_PARAM_AND_TYPE_LIST)
-{
-    XLOPER12 *params = NULL;
-    XLOPER12 *ranges = NULL;
-    size_t nparams = 0;
-    size_t nranges = 0;
-
-    if (split_worksheet_params(
-        &ranges,
-        &nranges,
-        &params,
-        &nparams,
-        false,
-        WORKSHEET_PARAM_LIST
-    ) == 0)
-        return make_string_cell(ERR_MSG_INVALID_PARAM);
-
-    LPXLOPER12 xl_result = run_sql_create_range(
-		db_path,
-        init_sql,
-        sql,
-        ranges,
-        nranges,
-        params,
-        nparams
-    );
-    
-    free(ranges);
-    free(params);
-
-    return xl_result;
-}
 
 /* Return add-in and loaded DuckDB version information. */
 LPXLOPER12 WINAPI addin_info(void)
 {
     char buf[XLSTR_MAX_LEN];
-
-    const char *duckdb_ver = "unknown";
-
-    if (DUCKDB_LIBRARY_VERSION)
-        duckdb_ver = DUCKDB_LIBRARY_VERSION();
-
     int n = snprintf(
         buf,
         sizeof(buf),
         "Add-in version: %s\n"
-        "DuckDB version: %s",
-        ADDIN_VERSION,
-        duckdb_ver ? duckdb_ver : "unknown"
+        ADDIN_VERSION
     );
 
     if (n < 0 || (size_t)n >= sizeof(buf))
@@ -948,114 +322,164 @@ LPXLOPER12 WINAPI addin_info(void)
     return make_string_cell(buf);
 }
 
-LPXLOPER12 WINAPI exec_sync_no_init(
-    const wchar_t *sql,
+static bool get_param(
+    void *data,
+    const char *key,
+    size_t len, 
+    tinytemplate_value_t *dst_val)
+{
+    if (!data || !key || !dst_val)
+        return false;
+
+    context_t *ctx = data;
+    data_dict_t *data_dict = ctx->data_dict;
+    data_dict_t *pair = NULL;
+    HASH_FIND(hh, data_dict, key, len, pair);
+    if (!pair || !pair->val)
+        return false;
+
+    LPXLOPER12 val = pair->val;
+    switch (LPXLOPER12_TYPE(val)) {
+        case xltypeInt:
+            tinytemplate_set_int(dst_val, (int64_t)(val->val.w));
+            return true;
+        case xltypeNum:
+            tinytemplate_set_double(dst_val, val->val.num);
+            return true;
+        case xltypeBool:
+            if (val->val.xbool == true)
+                tinytemplate_set_string(dst_val, "TRUE", 4);
+            else
+                tinytemplate_set_string(dst_val, "FALSE", 5);
+            return true;
+        case xltypeStr:
+            if (!pair->utf8_str)
+                return false;
+
+            tinytemplate_set_string(dst_val, pair->utf8_str, pair->utf8_len);
+            return true;
+
+        default:
+            return false;
+    }
+}
+
+static void writer(
+    void *data,
+    const char *str,
+    size_t len)
+{
+    if (!data || !str || len == 0)
+        return;
+
+    context_t *ctx = data;
+    if (ctx->failed)
+        return;
+
+    if (len > SIZE_MAX - ctx->output_len - 1)
+    {
+        ctx->failed = true;
+        return;
+    }
+
+    const size_t required = ctx->output_len + len + 1;
+
+    if (required > ctx->output_capacity)
+    {
+        if (required > SIZE_MAX - (BLOCK_SIZE - 1))
+        {
+            ctx->failed = true;
+            return;
+        }
+
+        const size_t new_capacity =
+            ((required + BLOCK_SIZE - 1) / BLOCK_SIZE) *
+            BLOCK_SIZE;
+
+        char *buf = realloc(ctx->output_buffer, new_capacity);
+        if (!buf)
+        {
+            ctx->failed = true;
+            return;
+        }
+        ctx->output_buffer = buf;
+        ctx->output_capacity = new_capacity;
+    }
+
+    memcpy(ctx->output_buffer + ctx->output_len, str, len);
+    ctx->output_len += len;
+    ctx->output_buffer[ctx->output_len] = '\0';
+}
+
+LPXLOPER12 WINAPI render(
+    const wchar_t *template_str,
     WORKSHEET_PARAM_AND_TYPE_LIST)
 {
-    return exec_sync(
+    data_dict_t *data_dict = NULL;
+    LPXLOPER12 result = NULL;
+    char *template_str_utf8 = NULL;
+    tinytemplate_instr_t renderer[32];
+    context_t *ctx = NULL;
+
+    size_t utf8_len = 0;
+    if (!template_str
+        || xlstr_to_utf8(&template_str_utf8, template_str, &utf8_len) == 0
+        || !template_str_utf8)
+    {
+        goto cleanup;
+    }
+
+    size_t num_instr = 0;
+    if(tinytemplate_compile(
+        template_str_utf8,
+        utf8_len,
+        renderer,
+        COUNT(renderer),
+        &num_instr,
         NULL,
-		NULL,
-        sql,
-        WORKSHEET_PARAM_LIST
-    );
-}
+        0
+    ) != TINYTEMPLATE_STATUS_DONE)
+    {
+        goto cleanup;
+    } 
 
-void WINAPI exec_async_no_init(
-    LPXLOPER12 asyncHandle,
-    const wchar_t *sql,
-    WORKSHEET_PARAM_AND_TYPE_LIST)
-{
-    exec_async(
-        asyncHandle,
-		NULL,
+    ctx = calloc(1, sizeof(*ctx));
+    if (!ctx)
+        goto cleanup;
+
+    if (parse_params(&data_dict, WORKSHEET_PARAM_LIST) == 0)
+        goto cleanup;
+
+    ctx->data_dict = data_dict;
+    data_dict = NULL;
+
+    if (tinytemplate_eval(
+        template_str_utf8,
+        renderer,
+        ctx,
+        get_param,
+        writer,
         NULL,
-        sql,
-        WORKSHEET_PARAM_LIST
-    );
-}
+        0
+    ) != TINYTEMPLATE_STATUS_DONE || ctx->failed)
+    {
+        goto cleanup;
+    }
 
-LPXLOPER12 WINAPI exec_sync_with_init(
-    const wchar_t *init_sql,
-    const wchar_t *sql,
-    WORKSHEET_PARAM_AND_TYPE_LIST)
-{
-    return exec_sync(
-		NULL,
-        init_sql,
-        sql,
-        WORKSHEET_PARAM_LIST
-    );
-}
+    result = make_string_cell(ctx->output_buffer);
 
-void WINAPI exec_async_with_init(
-    LPXLOPER12 asyncHandle,
-    const wchar_t *init_sql,
-    const wchar_t *sql,
-    WORKSHEET_PARAM_AND_TYPE_LIST)
-{
-    exec_async(
-        asyncHandle,
-		NULL,
-        init_sql,
-        sql,
-        WORKSHEET_PARAM_LIST
-    );
-}
+cleanup:
 
-LPXLOPER12 WINAPI attach_and_exec_sync_no_init(
-	const wchar_t *db_path,
-    const wchar_t *sql,
-    WORKSHEET_PARAM_AND_TYPE_LIST)
-{
-    return exec_sync(
-	    db_path,
-        NULL,
-        sql,
-        WORKSHEET_PARAM_LIST
-    );
-}
+    free(template_str_utf8);
 
-void WINAPI attach_and_exec_async_no_init(
-    LPXLOPER12 asyncHandle,
-	const wchar_t *db_path,
-    const wchar_t *sql,
-    WORKSHEET_PARAM_AND_TYPE_LIST)
-{
-    exec_async(
-        asyncHandle,
-		db_path,
-        NULL,
-        sql,
-        WORKSHEET_PARAM_LIST
-    );
-}
+    free_hash(data_dict);
 
-LPXLOPER12 WINAPI attach_and_exec_sync_with_init(
-	const wchar_t *db_path,
-    const wchar_t *init_sql,
-    const wchar_t *sql,
-    WORKSHEET_PARAM_AND_TYPE_LIST)
-{
-    return exec_sync(
-		db_path,
-        init_sql,
-        sql,
-        WORKSHEET_PARAM_LIST
-    );
-}
+    if (ctx)
+    {
+        free(ctx->output_buffer);
+        free_hash(ctx->data_dict);
+        free(ctx);
+    }
 
-void WINAPI attach_and_exec_async_with_init(
-    LPXLOPER12 asyncHandle,
-	const wchar_t *db_path,
-    const wchar_t *init_sql,
-    const wchar_t *sql,
-    WORKSHEET_PARAM_AND_TYPE_LIST)
-{
-    exec_async(
-        asyncHandle,
-		db_path,
-        init_sql,
-        sql,
-        WORKSHEET_PARAM_LIST
-    );
+    return result;
 }
