@@ -3,9 +3,9 @@
 
 /* Name displayed in Excel Add-In Manager. */
 #ifndef ADDIN_VERSION
-#define ADDIN_MANAGER_TEXT          "DuckDBExcelAddin(dev)"
+#define ADDIN_MANAGER_TEXT          "xlTemplate(dev)"
 #else
-#define ADDIN_MANAGER_TEXT          "DuckDBExcelAddin"
+#define ADDIN_MANAGER_TEXT          "xlTemplate"
 #endif
 
 /* Add-in version information. */
@@ -19,38 +19,34 @@
  * Do not modify.
  */
 #define XLTYPEMASK                  0x00000fff
-
-/* Internal limits */
-#define ERR_MSG_MAX_LEN             512
-#define MSG_MAX_LENGTH              512
+#define XLSTR_MAX_LEN               0x00007fff
 
 /*
- * Worksheet functions expose 128 optional parameters by default.
+ * Worksheet functions expose 128 optional arguments by default,
+ * representing 64 key/value pairs.
  *
  * Extend WORKSHEET_PARAMS() to increase the maximum number of
- * xlrange and bind parameters supported by worksheet functions.
+ * key/value arguments supported by worksheet functions.
  */
-#define WORKSHEET_PARAMS(X, Y) \
-    X(1)   X(2)   X(3)   X(4)   X(5)   X(6)   X(7)   X(8)   X(9)   X(10)  \
-    X(11)  X(12)  X(13)  X(14)  X(15)  X(16)  X(17)  X(18)  X(19)  X(20)  \
-    X(21)  X(22)  X(23)  X(24)  X(25)  X(26)  X(27)  X(28)  X(29)  X(30)  \
-    X(31)  X(32)  X(33)  X(34)  X(35)  X(36)  X(37)  X(38)  X(39)  X(40)  \
-    X(41)  X(42)  X(43)  X(44)  X(45)  X(46)  X(47)  X(48)  X(49)  X(50)  \
-    X(51)  X(52)  X(53)  X(54)  X(55)  X(56)  X(57)  X(58)  X(59)  X(60)  \
-    X(61)  X(62)  X(63)  X(64)  X(65)  X(66)  X(67)  X(68)  X(69)  X(70)  \
-    X(71)  X(72)  X(73)  X(74)  X(75)  X(76)  X(77)  X(78)  X(79)  X(80)  \
-    X(81)  X(82)  X(83)  X(84)  X(85)  X(86)  X(87)  X(88)  X(89)  X(90)  \
-    X(91)  X(92)  X(93)  X(94)  X(95)  X(96)  X(97)  X(98)  X(99)  X(100) \
-    X(101) X(102) X(103) X(104) X(105) X(106) X(107) X(108) X(109) X(110) \
-    X(111) X(112) X(113) X(114) X(115) X(116) X(117) X(118) X(119) X(120) \
-    X(121) X(122) X(123) X(124) X(125) X(126) X(127) Y(128)
+#define WORKSHEET_PARAMS(X, Y, Z) \
+    X(1)  Y(1)  X(2)  Y(2)  X(3)  Y(3)  X(4)  Y(4)   \
+    X(5)  Y(5)  X(6)  Y(6)  X(7)  Y(7)  X(8)  Y(8)   \
+    X(9)  Y(9)  X(10) Y(10) X(11) Y(11) X(12) Y(12)  \
+    X(13) Y(13) X(14) Y(14) X(15) Y(15) X(16) Y(16)  \
+    X(17) Y(17) X(18) Y(18) X(19) Y(19) X(20) Y(20)  \
+    X(21) Y(21) X(22) Y(22) X(23) Y(23) X(24) Y(24)  \
+    X(25) Y(25) X(26) Y(26) X(27) Y(27) X(28) Y(28)  \
+    X(29) Y(29) X(30) Y(30) X(31) Y(31) X(32) Y(32)  \
+    X(33) Y(33) X(34) Y(34) X(35) Y(35) X(36) Y(36)  \
+    X(37) Y(37) X(38) Y(38) X(39) Y(39) X(40) Y(40)  \
+    X(41) Y(41) X(42) Y(42) X(43) Y(43) X(44) Y(44)  \
+    X(45) Y(45) X(46) Y(46) X(47) Y(47) X(48) Y(48)  \
+    X(49) Y(49) X(50) Y(50) X(51) Y(51) X(52) Y(52)  \
+    X(53) Y(53) X(54) Y(54) X(55) Y(55) X(56) Y(56)  \
+    X(57) Y(57) X(58) Y(58) X(59) Y(59) X(60) Y(60)  \
+    X(61) Y(61) X(62) Y(62) X(63) Y(63) X(64) Z(64)
 
 /* Excel function category */
 #define FUNCTION_CATEGORY           L"xlTemplate"
-
-/*
- * Floating-point comparison tolerance.
- */
-#define EPSILON                     1e-12 
 
 #endif /* CONFIG_H */
