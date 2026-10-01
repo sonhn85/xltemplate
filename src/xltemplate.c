@@ -26,8 +26,7 @@ typedef struct context_t {
 } context_t;
 
 #define BLOCK_SIZE ((size_t)1024)
-
-#define COUNT(X) ((int) (sizeof(X) / sizeof((X)[0])))
+#define INITIAL_RENDERER_CAPACITY ((size_t)64)
 
 #define ERR_MSG_INFO "Error: Failed to get add-in info."
 
@@ -99,6 +98,8 @@ int WINAPI xlAutoOpen(void)
 
     XLL_FUNCTIONS(REGISTER_FUNCTION)
 
+    Excel12f(xlFree, 0, 1, &xllPath);
+
     return 1;
 
 register_failure:
@@ -106,7 +107,7 @@ register_failure:
     show_error(hwnd, L"Fail to register worksheet functions");
 	xlUnload();
 
-    Excel12f(xlFree, 0, 1, &xllPath); 
+    Excel12f(xlFree, 0, 1, &xllPath);
 
     return 0;
 }
@@ -312,7 +313,7 @@ LPXLOPER12 WINAPI addin_info(void)
     int n = snprintf(
         buf,
         sizeof(buf),
-        "Add-in version: %s\n"
+        "Add-in version: %s\n",
         ADDIN_VERSION
     );
 
@@ -411,6 +412,61 @@ static void writer(
     ctx->output_buffer[ctx->output_len] = '\0';
 }
 
+/* Implement growing program size. */
+static tinytemplate_status_t compile_template(
+    const char *template_str,
+    size_t template_len,
+    tinytemplate_instr_t **out_renderer,
+    size_t *out_num_instr)
+{
+    if (!template_str || !out_renderer || !out_num_instr)
+        return TINYTEMPLATE_STATUS_EMEMORY;
+
+    *out_renderer = NULL;
+    *out_num_instr = 0;
+
+    size_t capacity = INITIAL_RENDERER_CAPACITY;
+
+    for (;;)
+    {
+        if (capacity > SIZE_MAX / sizeof(tinytemplate_instr_t))
+            return TINYTEMPLATE_STATUS_EMEMORY;
+
+        tinytemplate_instr_t *renderer = realloc(
+            *out_renderer,
+            capacity * sizeof(*renderer)
+        );
+        if (!renderer)
+            return TINYTEMPLATE_STATUS_EMEMORY;
+            
+        *out_renderer = renderer;
+
+        size_t num_instr = 0;
+        tinytemplate_status_t status = tinytemplate_compile(
+            template_str,
+            template_len,
+            renderer,
+            capacity,
+            &num_instr,
+            NULL,
+            0);
+
+        if (status == TINYTEMPLATE_STATUS_DONE)
+        {
+            *out_num_instr = num_instr;
+            return status;
+        }
+
+        if (status != TINYTEMPLATE_STATUS_EMEMORY)
+            return status;
+
+        if (capacity > SIZE_MAX / 2)
+            return TINYTEMPLATE_STATUS_EMEMORY;
+
+        capacity *= 2;
+    }
+}
+
 LPXLOPER12 WINAPI render(
     const wchar_t *template_str,
     WORKSHEET_PARAM_AND_TYPE_LIST)
@@ -418,7 +474,7 @@ LPXLOPER12 WINAPI render(
     data_dict_t *data_dict = NULL;
     LPXLOPER12 result = NULL;
     char *template_str_utf8 = NULL;
-    tinytemplate_instr_t renderer[32];
+    tinytemplate_instr_t *renderer = NULL;
     context_t *ctx = NULL;
 
     size_t utf8_len = 0;
@@ -430,14 +486,11 @@ LPXLOPER12 WINAPI render(
     }
 
     size_t num_instr = 0;
-    if(tinytemplate_compile(
+    if(compile_template(
         template_str_utf8,
         utf8_len,
-        renderer,
-        COUNT(renderer),
-        &num_instr,
-        NULL,
-        0
+        &renderer,
+        &num_instr
     ) != TINYTEMPLATE_STATUS_DONE)
     {
         goto cleanup;
@@ -470,8 +523,8 @@ LPXLOPER12 WINAPI render(
 
 cleanup:
 
+    free(renderer);
     free(template_str_utf8);
-
     free_hash(data_dict);
 
     if (ctx)
