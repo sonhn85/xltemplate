@@ -3,7 +3,6 @@
 CC ?= gcc
 CXX ?= g++
 
-DUCKDB_INC_PATH ?= libduckdb-windows-amd64
 EXCEL_SDK_PATH ?= Excel2013XLLSDK
 ADDIN_VERSION ?= dev
 
@@ -11,7 +10,7 @@ SRC_DIR := src
 INC_DIR := include
 BUILD_DIR := build
 DIST_DIR := dist
-XLL_OUT := $(DIST_DIR)/DuckDBExcelAddin.xll
+XLL_OUT := $(DIST_DIR)/xlTemplate.xll
 
 EXCEL_SDK_SRC_PATH := $(EXCEL_SDK_PATH)/SRC
 EXCEL_SDK_INC_PATH := $(EXCEL_SDK_PATH)/INCLUDE
@@ -19,18 +18,19 @@ FRAMEWRK_PATH := $(EXCEL_SDK_PATH)/SAMPLES/FRAMEWRK
 FRAMEWRK_SRC_PATH := $(FRAMEWRK_PATH)
 FRAMEWRK_INC_PATH := $(FRAMEWRK_PATH)
 UTHASH_INC_PATH := lib/uthash
+TINYTEMPLATE_PATH := lib/tinytemplate
 
 CPPFLAGS := \
 	-I$(INC_DIR) \
 	-I$(SRC_DIR) \
 	-I$(EXCEL_SDK_INC_PATH) \
-	-I$(DUCKDB_INC_PATH) \
 	-I$(FRAMEWRK_INC_PATH) \
-	-I$(UTHASH_INC_PATH)
+	-I$(UTHASH_INC_PATH) \
+	-I$(TINYTEMPLATE_PATH)
 
 CFLAGS := -O2 -DADDIN_VERSION=\"$(ADDIN_VERSION)\"
 LDFLAGS := -shared
-LDLIBS := -lpathcch -lstdc++
+LDLIBS := -lstdc++
 
 OBJECTS := \
 	$(BUILD_DIR)/memorypool.o \
@@ -38,11 +38,8 @@ OBJECTS := \
 	$(BUILD_DIR)/framewrk.o \
 	$(BUILD_DIR)/excel4workaround.o \
 	$(BUILD_DIR)/helper.o \
-	$(BUILD_DIR)/db_lib_loader.o \
-	$(BUILD_DIR)/db_xlrange.o \
-	$(BUILD_DIR)/db_scalar_funcs.o \
-	$(BUILD_DIR)/db_fetch.o \
-	$(BUILD_DIR)/DuckDBExcelAddin.o
+	$(BUILD_DIR)/tinytemplate.o \
+	$(BUILD_DIR)/xltemplate.o
 
 .DEFAULT_GOAL := help
 
@@ -72,19 +69,10 @@ $(BUILD_DIR)/excel4workaround.o: $(SRC_DIR)/excel4workaround.c | $(BUILD_DIR)
 $(BUILD_DIR)/helper.o: $(SRC_DIR)/helper.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(CPPFLAGS) -c -o $@ $<
 
-$(BUILD_DIR)/db_lib_loader.o: $(SRC_DIR)/db_lib_loader.c | $(BUILD_DIR)
+$(BUILD_DIR)/tinytemplate.o: $(TINYTEMPLATE_PATH)/tinytemplate.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(CPPFLAGS) -c -o $@ $<
 
-$(BUILD_DIR)/db_xlrange.o: $(SRC_DIR)/db_xlrange.c | $(BUILD_DIR)
-	$(CC) $(CFLAGS) $(CPPFLAGS) -c -o $@ $<
-
-$(BUILD_DIR)/db_scalar_funcs.o: $(SRC_DIR)/db_scalar_funcs.c | $(BUILD_DIR)
-	$(CC) $(CFLAGS) $(CPPFLAGS) -c -o $@ $<
-
-$(BUILD_DIR)/db_fetch.o: $(SRC_DIR)/db_fetch.c | $(BUILD_DIR)
-	$(CC) $(CFLAGS) $(CPPFLAGS) -c -o $@ $<
-
-$(BUILD_DIR)/DuckDBExcelAddin.o: $(SRC_DIR)/DuckDBExcelAddin.c | $(BUILD_DIR)
+$(BUILD_DIR)/xltemplate.o: $(SRC_DIR)/xltemplate.c | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(CPPFLAGS) -c -o $@ $<
 
 $(XLL_OUT): $(OBJECTS) | $(DIST_DIR)
@@ -96,7 +84,7 @@ clean:
 	rm -rf $(BUILD_DIR) $(XLL_OUT)
 
 help:
-	@echo "DuckDB Excel Add-in Build"
+	@echo "xlTemplate Add-in Build"
 	@echo ""
 	@echo "Targets:"
 	@echo "  all     Build the add-in"
@@ -106,7 +94,6 @@ help:
 	@echo ""
 	@echo "Configuration:"
 	@echo "  ADDIN_VERSION (default: dev)"
-	@echo "  DUCKDB_INC_PATH"
 	@echo "  EXCEL_SDK_PATH"
 	@echo "  CC"
 	@echo "  CXX"
